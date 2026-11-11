@@ -1,0 +1,10 @@
+node_modules
+web-dist
+dist
+data
+.venv
+.wrangler
+test-results
+playwright-report
+uv.lock
+package-lock.json
