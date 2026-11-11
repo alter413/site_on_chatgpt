@@ -4,9 +4,11 @@ import sys
 import time
 
 import httpx
+import pytest
 
 
-def test_real_server_console_and_graceful_shutdown(tmp_path):
+@pytest.mark.parametrize("mode", ["--api-only", "--web"])
+def test_real_server_console_and_graceful_shutdown(tmp_path, mode):
     import socket
 
     with socket.socket() as sock:
@@ -24,7 +26,7 @@ def test_real_server_console_and_graceful_shutdown(tmp_path):
                 sys.executable,
                 "-m",
                 "sandbox_bot",
-                "--api-only",
+                mode,
                 "--data-dir",
                 str(tmp_path / "data"),
                 "--port",

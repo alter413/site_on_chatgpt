@@ -3,7 +3,17 @@ name = "telegram-sandbox"
 version = "0.1.0"
 description = "Private per-chat Telegram AI assistant"
 requires-python = ">=3.12"
-dependencies = ["telethon>=1.40,<2", "httpx>=0.28,<1", "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "python-multipart>=0.0.20", "pypdf>=5,<7", "python-docx>=1.1,<2", "pillow>=11,<13"]
+dependencies = [
+    "telethon>=1.40,<2",
+    "httpx>=0.28,<1",
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.34,<1",
+    "python-multipart>=0.0.20",
+    "pypdf>=5,<7",
+    "python-docx>=1.1,<2",
+    "pillow>=11,<13",
+    "cryptography>=46,<51",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "ruff>=0.11,<1"]

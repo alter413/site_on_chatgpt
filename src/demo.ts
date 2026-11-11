@@ -1,6 +1,17 @@
 import type { Activity, Chat, Dashboard, Material, Settings, Status } from './types';
+import type { TelegramState } from './Connections';
 
 export class Demo {
+  telegramState: TelegramState = {
+    state: 'connected',
+    connected: true,
+    api_id: 123456,
+    api_hash_configured: true,
+    phone: '+79991234567',
+    phone_masked: '+*******4567',
+    session_saved: true,
+    account: { id: 4242, name: 'Алексей' },
+  };
   status: Status = 'busy';
   chats: Chat[] = [
     {
@@ -145,11 +156,52 @@ export class Demo {
   }
   async request(path: string, method: string, body?: unknown): Promise<unknown> {
     const value = body as Record<string, unknown>;
+    if (path === '/telegram') return structuredClone(this.telegramState);
+    if (path === '/telegram/code') {
+      this.telegramState = {
+        ...this.telegramState,
+        state: 'code_required',
+        connected: false,
+        api_id: Number(value.api_id),
+        api_hash_configured: true,
+        phone: String(value.phone),
+        phone_masked: '+*******' + String(value.phone).slice(-4),
+        account: null,
+      };
+      return structuredClone(this.telegramState);
+    }
+    if (path === '/telegram/verify') {
+      if (value.code === '00000') throw new Error('Неверный код Telegram');
+      this.telegramState.state = 'password_required';
+      return structuredClone(this.telegramState);
+    }
+    if (path === '/telegram/password') {
+      this.telegramState = {
+        ...this.telegramState,
+        state: 'connected',
+        connected: true,
+        session_saved: true,
+        account: { id: 4242, name: 'Алексей' },
+      };
+      this.status = 'online';
+      return structuredClone(this.telegramState);
+    }
+    if (path === '/telegram/logout') {
+      this.telegramState = {
+        ...this.telegramState,
+        state: 'disconnected',
+        connected: false,
+        session_saved: false,
+        account: null,
+      };
+      this.status = 'online';
+      return structuredClone(this.telegramState);
+    }
     if (path === '/status') {
       if (method === 'PUT') this.status = value.status as Status;
       return { status: this.status };
     }
-    if (path === '/health') return { ok: true, telegram_connected: true };
+    if (path === '/health') return { ok: true, telegram_connected: this.telegramState.connected };
     if (path === '/chats') return structuredClone(this.chats);
     if (path === '/settings') {
       if (method === 'PATCH') {

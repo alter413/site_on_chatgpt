@@ -15,4 +15,6 @@ web-dist/
 playwright-report/
 test-results/
 .standalone/
+vault.key
+config.enc
 

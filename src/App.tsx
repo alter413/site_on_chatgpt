@@ -1,5 +1,6 @@
 import { Brand } from './Brand';
 import { Login } from './Login';
+import { Connections } from './Connections';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Activity,
@@ -21,6 +22,7 @@ import {
   Sparkles,
   X,
   Zap,
+  Cable,
 } from 'lucide-react';
 import { Client } from './client';
 import { Context, type Route } from './context';
@@ -38,6 +40,7 @@ function liveClient() {
 const navigation = [
   { id: 'overview', label: 'Обзор', icon: LayoutDashboard },
   { id: 'sandboxes', label: 'Песочницы', icon: FolderLock },
+  { id: 'connection', label: 'Подключение', icon: Cable },
   { id: 'models', label: 'Модели и ИИ', icon: Sparkles },
   { id: 'activity', label: 'Активность', icon: Activity },
   { id: 'appearance', label: 'Внешний вид', icon: Palette },
@@ -140,7 +143,7 @@ export default function App() {
         try {
           result = (await response.json()) as typeof result;
         } catch {
-          throw new Error('Подключите сайт к серверный Worker, чтобы открыть личную панель.');
+          throw new Error('На сайте нет серверного API. Установите полный Worker через Edit code.');
         }
         if (!response.ok) throw new Error(result.detail || 'Войдите с учётной записью владельца.');
         if (typeof result.email !== 'string' || result.access !== 'owner')
@@ -358,9 +361,11 @@ export default function App() {
           </div>
           <div className="nav-label">УПРАВЛЕНИЕ</div>
           <nav aria-label="Основная навигация">
-            {navigation.map((item, i) => (
+            {navigation.map((item) => (
               <div key={item.id}>
-                {i === 4 && <div className="nav-label secondary-label">ПРОСТРАНСТВО</div>}
+                {item.id === 'appearance' && (
+                  <div className="nav-label secondary-label">ПРОСТРАНСТВО</div>
+                )}
                 <button
                   onClick={() => navigate(item.id)}
                   className={`nav-item ${route === item.id ? 'active' : ''}`}
@@ -497,6 +502,8 @@ export default function App() {
               <Overview />
             ) : route === 'sandboxes' ? (
               <Sandboxes />
+            ) : route === 'connection' ? (
+              <Connections />
             ) : route === 'models' ? (
               <Models />
             ) : route === 'activity' ? (

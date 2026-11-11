@@ -15,8 +15,10 @@ from .ai import AIClient, validate_base_url
 from .api import create_api
 from .console import console
 from .engine import Engine
+from .runtime import Runtime
 from .store import Store
 from .telegram import TelegramGateway
+from .vault import Vault
 
 
 @contextmanager
@@ -55,24 +57,37 @@ def ask(label, *, secret=False, default=""):
 
 async def run(args):
     directory = args.data_dir.resolve()
-    token = os.environ.get("SANDBOX_ADMIN_TOKEN", "")
+    bootstrap = Vault(directory) if args.web else None
+    remembered = bootstrap.load() if bootstrap else {}
+    token = os.environ.get("SANDBOX_ADMIN_TOKEN", "") or remembered.get("admin_token", "")
     if not token:
         token = getpass.getpass("Токен управления (Enter — сгенерировать): ").strip()
         if not token:
             token = secrets.token_urlsafe(32)
             print("Сохраните токен управления, он показан один раз:", token)
-    if len(token) < 24:
-        raise ValueError("Токен управления: минимум 24 символа")
+    if len(token) < 24 or not token.isascii() or any(c.isspace() for c in token):
+        raise ValueError("Токен управления: минимум 24 ASCII-символа без пробелов")
     client = None
     ai = None
     store = None
+    runtime = None
     tasks = []
+    startup_task = None
     with single_instance(directory):
         try:
+            if bootstrap:
+                remembered = bootstrap.load()
+                remembered["admin_token"] = token
+                bootstrap.save(remembered)
             store = Store(directory / "state.sqlite3")
             store.set_status("online")
             gateway = None
-            if not args.api_only:
+            if args.web:
+                runtime = Runtime(directory, store)
+                gateway = runtime
+                startup_task = asyncio.create_task(runtime.start())
+                tasks.append(startup_task)
+            elif not args.api_only:
                 api_id = int(ask("Telegram API ID"))
                 api_hash = ask("Telegram API hash", secret=True)
                 if api_id <= 0 or not re.fullmatch(r"[0-9a-fA-F]{32}", api_hash):
@@ -110,7 +125,7 @@ async def run(args):
                 gateway = TelegramGateway(client, store, Engine(store, ai), owner.id)
                 gateway.install()
                 print(f"Telegram подключён, ID владельца: {owner.id}. Статус: online.")
-            app = create_api(store, token, gateway, ai=ai)
+            app = create_api(store, token, gateway, ai=ai, runtime=runtime)
             server = uvicorn.Server(
                 uvicorn.Config(
                     app, host="127.0.0.1", port=args.port, log_level="warning", access_log=False
@@ -123,7 +138,8 @@ async def run(args):
             if client:
                 tasks.append(asyncio.ensure_future(client.run_until_disconnected()))
             print(f"Management API: http://127.0.0.1:{args.port}/api/v1")
-            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            watching = [task for task in tasks if task is not startup_task]
+            done, _ = await asyncio.wait(watching, return_when=asyncio.FIRST_COMPLETED)
             server.should_exit = True
             # Surface startup/runtime failures without provider response bodies or secrets.
             for task in done:
@@ -140,6 +156,8 @@ async def run(args):
                 await client.disconnect()
             if ai:
                 await ai.close()
+            if runtime:
+                await runtime.stop()
             if store:
                 store.close()
 
@@ -148,7 +166,11 @@ def main():
     parser = argparse.ArgumentParser(description="Telegram AI с песочницей для каждого чата")
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--api-only", action="store_true", help="API без входа в Telegram и AI")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--api-only", action="store_true", help="API без входа в Telegram и AI")
+    modes.add_argument(
+        "--web", action="store_true", help="Настройка Telegram и ИИ с сайта; сохранять реквизиты"
+    )
     parser.add_argument("--no-console", action="store_true", help="Управлять только через API")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:

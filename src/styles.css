@@ -3175,3 +3175,10 @@ progress::-moz-progress-bar {
     scroll-behavior: auto !important;
   }
 }
+
+.telegram-form {
+  margin-top: 24px;
+}
+.soft-note .ghost {
+  color: var(--accent);
+}

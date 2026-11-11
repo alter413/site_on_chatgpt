@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, File, HTTPException, Path, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
@@ -105,7 +106,30 @@ class AuthSession(BaseModel):
     version: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
-def create_api(store: Store, token: str, telegram=None, ai=None):
+class TelegramSetup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    api_id: int = Field(gt=0, strict=True)
+    api_hash: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{32}$")
+    phone: str = Field(min_length=8, max_length=24)
+
+
+class TelegramCode(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    code: str = Field(pattern=r"^[0-9]{4,8}$")
+
+
+class TelegramPassword(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    password: str = Field(min_length=1, max_length=256)
+
+
+def create_api(store: Store, token: str, telegram=None, ai=None, runtime=None):
+    if runtime is not None:
+        telegram = runtime
+
+    def current_ai():
+        return runtime.ai if runtime is not None else ai
+
     if len(token) < 24 or not token.isascii() or any(c.isspace() for c in token):
         raise ValueError("Токен управления: минимум 24 ASCII-символа без пробелов")
     bearer = HTTPBearer(auto_error=False)
@@ -126,6 +150,15 @@ def create_api(store: Store, token: str, telegram=None, ai=None):
     )
     app.add_middleware(RequestGuard, token=token)
 
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(_request, exc):
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": [{"loc": error["loc"], "msg": error["msg"]} for error in exc.errors()]
+            },
+        )
+
     @app.exception_handler(ValueError)
     async def invalid(_request, exc):
         return JSONResponse(status_code=422, content={"detail": str(exc)})
@@ -139,14 +172,16 @@ def create_api(store: Store, token: str, telegram=None, ai=None):
         return {"ok": True, "telegram_connected": bool(telegram and telegram.connected())}
 
     def public_settings():
+        instance = current_ai()
         return {
-            "model": ai.model if ai else "",
-            "base_url": ai.base_url if ai else "",
-            "api_key_configured": bool(ai and ai.api_key),
-            "search_key_configured": bool(ai and ai.search_key),
-            "reply_style": ai.reply_style if ai else "neutral",
-            "max_output_units": ai.max_output_units if ai else 3500,
-            "runtime_available": ai is not None,
+            "model": instance.model if instance else "",
+            "base_url": instance.base_url if instance else "",
+            "api_key_configured": bool(instance and instance.api_key),
+            "search_key_configured": bool(instance and instance.search_key),
+            "reply_style": instance.reply_style if instance else "neutral",
+            "max_output_units": instance.max_output_units if instance else 3500,
+            "runtime_available": instance is not None or runtime is not None,
+            "credentials_persisted": bool(runtime is not None and runtime.config.get("ai")),
         }
 
     @app.get("/api/v1/settings")
@@ -155,28 +190,35 @@ def create_api(store: Store, token: str, telegram=None, ai=None):
 
     @app.patch("/api/v1/settings")
     async def update_settings(body: SettingsPatch):
-        if ai is None:
+        instance = current_ai()
+        if instance is None and runtime is None:
             raise HTTPException(503, "ИИ не подключён: запустите бот без --api-only")
         values = body.model_dump(exclude_unset=True)
         if any(v is None for v in values.values()):
             raise ValueError("Значения настроек не могут быть null")
         if "base_url" in values:
             values["base_url"] = validate_base_url(values["base_url"])
-            if urlsplit(values["base_url"]).netloc != urlsplit(
-                ai.base_url
-            ).netloc and not values.get("api_key"):
+            if (
+                instance is not None
+                and urlsplit(values["base_url"]).netloc != urlsplit(instance.base_url).netloc
+                and not values.get("api_key")
+            ):
                 raise ValueError("Для другого провайдера введите новый API key")
+        if runtime is not None:
+            runtime.configure_ai(values)
+            return public_settings()
         store.save_settings({k: v for k, v in values.items() if k not in {"api_key", "search_key"}})
         for key, value in values.items():
-            setattr(ai, key, value)
+            setattr(instance, key, value)
         return public_settings()
 
     @app.get("/api/v1/models")
     async def models():
-        if ai is None:
+        instance = current_ai()
+        if instance is None:
             raise HTTPException(503, "ИИ не подключён")
         try:
-            return {"models": await ai.models()}
+            return {"models": await instance.models()}
         except Exception:  # noqa: BLE001 — never return provider secrets
             raise HTTPException(502, "Провайдер не вернул список; введите модель вручную") from None
 
@@ -264,5 +306,33 @@ def create_api(store: Store, token: str, telegram=None, ai=None):
     async def auth_revoke(body: AuthSession):
         store.revoke_session(body.digest)
         return {"revoked": True}
+
+    def require_runtime():
+        if runtime is None:
+            raise HTTPException(503, "Для настройки с сайта запустите бот с --web")
+        return runtime
+
+    @app.get("/api/v1/telegram")
+    async def telegram_state():
+        return require_runtime().public_state()
+
+    @app.post("/api/v1/telegram/code")
+    async def telegram_code(body: TelegramSetup):
+        try:
+            return await require_runtime().request_code(body.api_id, body.api_hash, body.phone)
+        except TimeoutError:
+            raise HTTPException(504, "Telegram не ответил вовремя. Попробуйте ещё раз") from None
+
+    @app.post("/api/v1/telegram/verify")
+    async def telegram_verify(body: TelegramCode):
+        return await require_runtime().verify_code(body.code)
+
+    @app.post("/api/v1/telegram/password")
+    async def telegram_password(body: TelegramPassword):
+        return await require_runtime().verify_password(body.password)
+
+    @app.post("/api/v1/telegram/logout")
+    async def telegram_logout():
+        return await require_runtime().logout()
 
     return app

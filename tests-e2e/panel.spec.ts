@@ -23,6 +23,7 @@ test('desktop overview and all navigation routes render without JS errors', asyn
   await page.screenshot({ path: 'test-results/sova-overview.png', fullPage: true });
   for (const [nav, heading] of [
     ['Песочницы', 'Песочницы.'],
+    ['Подключение', 'Подключение Telegram.'],
     ['Модели и ИИ', 'Модели и поведение.'],
     ['Активность', 'Журнал активности.'],
     ['Внешний вид', 'Внешний вид.'],
@@ -180,6 +181,7 @@ test('light theme pages and sandbox dialog meet accessibility checks', async ({ 
   for (const label of [
     'Обзор',
     'Песочницы',
+    'Подключение',
     'Модели и ИИ',
     'Активность',
     'Внешний вид',
@@ -206,4 +208,45 @@ test('light theme pages and sandbox dialog meet accessibility checks', async ({ 
   expect(result.violations.map((v) => ({ id: v.id, nodes: v.nodes.map((n) => n.target) }))).toEqual(
     [],
   );
+});
+
+test('Telegram setup wizard supports code, 2FA and saved-session state', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  await demo(page);
+  await page
+    .getByRole('navigation')
+    .getByRole('button', { name: 'Подключение', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'Выйти из Telegram', exact: true }).click();
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: 'Подтвердить выход', exact: true })
+    .click();
+  await page.getByLabel('Telegram API ID', { exact: true }).fill('123456');
+  await page.getByLabel('Telegram API hash', { exact: true }).fill('a'.repeat(32));
+  await page.getByLabel('Номер телефона Telegram', { exact: true }).fill('+79991234567');
+  await page.getByRole('button', { name: 'Получить код Telegram', exact: true }).click();
+  await expect(page.getByLabel('Код входа Telegram', { exact: true })).toBeVisible();
+  await page.getByLabel('Код входа Telegram', { exact: true }).fill('00000');
+  await page.getByRole('button', { name: 'Подтвердить код', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Неверный код Telegram');
+  await page.getByLabel('Код входа Telegram', { exact: true }).fill('12345');
+  await page.getByRole('button', { name: 'Подтвердить код', exact: true }).click();
+  await page.getByLabel('Пароль двухэтапной проверки Telegram', { exact: true }).fill('demo-2fa');
+  await page.getByRole('button', { name: 'Завершить вход', exact: true }).click();
+  await expect(page.getByText('Сессия сохранена на машине бота.', { exact: false })).toBeVisible();
+  await expect(page.getByLabel('Telegram API hash', { exact: true })).toHaveValue('');
+  await page.screenshot({ path: 'test-results/sova-telegram-setup.png', fullPage: true });
+});
+
+test('login explicitly explains a static-only deployment and short password', async ({ page }) => {
+  await page.route('**/api/session', (route) => route.fulfill({ status: 404, body: '' }));
+  await page.route('**/api/login', (route) => route.fulfill({ status: 404, body: '' }));
+  await page.goto('/');
+  await page.getByLabel('Пароль владельца', { exact: true }).fill('short');
+  await page.getByRole('button', { name: 'Войти в пространство', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Вставьте весь пароль');
+  await page.getByLabel('Пароль владельца', { exact: true }).fill('x'.repeat(43));
+  await page.getByRole('button', { name: 'Войти в пространство', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('отсутствует сервер входа');
 });

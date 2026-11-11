@@ -2,7 +2,14 @@ import { createContext, useContext } from 'react';
 import type { Client } from './client';
 import type { Appearance, PanelData } from './types';
 export type Route =
-  'overview' | 'sandboxes' | 'models' | 'activity' | 'appearance' | 'security' | 'guide';
+  | 'connection'
+  | 'overview'
+  | 'sandboxes'
+  | 'models'
+  | 'activity'
+  | 'appearance'
+  | 'security'
+  | 'guide';
 export interface PanelContext {
   data: PanelData;
   client: Client;

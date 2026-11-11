@@ -243,6 +243,35 @@ describe('password owner authentication', () => {
 });
 
 describe('authenticated proxy boundary', () => {
+  it('allows Telegram setup only after authentication and shows only allowlisted errors', async () => {
+    const backend = new Backend();
+    expect(allowedRoute('/api/v1/telegram/code', 'POST')).toBe(true);
+    expect(allowedRoute('/api/v1/telegram/code', 'GET')).toBe(false);
+    expect(
+      (
+        await handleRequest(request('/api/v1/telegram/code', { method: 'POST', body: {} }), env, {
+          fetch: backend.fetch,
+        })
+      ).status,
+    ).toBe(401);
+    const stored = await cookie(backend);
+    for (const detail of ['Неверный код Telegram', 'PRIVATE_CODE_OR_SESSION']) {
+      backend.upstream.mockImplementation(async () => Response.json({ detail }, { status: 422 }));
+      const result = await handleRequest(
+        request('/api/v1/telegram/verify', {
+          method: 'POST',
+          cookie: stored,
+          body: { code: '00000' },
+        }),
+        env,
+        { fetch: backend.fetch },
+      );
+      const text = await result.text();
+      expect(result.status).toBe(422);
+      if (detail === 'Неверный код Telegram') expect(text).toContain(detail);
+      else expect(text).not.toContain(detail);
+    }
+  });
   it('rejects cross-origin writes', async () => {
     const backend = new Backend();
     const stored = await cookie(backend);

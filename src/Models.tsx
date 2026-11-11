@@ -93,6 +93,7 @@ export function Models() {
                 <input
                   type="password"
                   autoComplete="new-password"
+                  required={!saved.api_key_configured}
                   value={key}
                   onChange={(e) => setKey(e.target.value)}
                   placeholder={
@@ -103,7 +104,7 @@ export function Models() {
                 />
               </div>
               <small>
-                Новый ключ действует до перезапуска бота. При смене провайдера укажите новый ключ.
+                В режиме --web ключ сохраняется зашифрованным и восстанавливается при запуске.
               </small>
             </label>
             <div className="field">

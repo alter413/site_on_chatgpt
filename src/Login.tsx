@@ -29,6 +29,11 @@ export function Login({
   const [failure, setFailure] = useState('');
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    const cleanPassword = password.trim();
+    if (!/^[A-Za-z0-9_-]{43,128}$/.test(cleanPassword)) {
+      setFailure('Вставьте весь пароль: от 43 символов, без пробелов и кавычек.');
+      return;
+    }
     setBusy(true);
     setFailure('');
     try {
@@ -36,9 +41,13 @@ export function Login({
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', 'X-Panel-Request': '1' },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ password: cleanPassword }),
         signal: AbortSignal.timeout(15000),
       });
+      if (response.status === 404 || response.status === 405)
+        throw new Error(
+          'На сайте отсутствует сервер входа. Установите полный Worker через Edit code; загрузка папки публикует только интерфейс.',
+        );
       const result = (await response.json()) as Partial<Session> & { detail?: string };
       if (!response.ok)
         throw new Error(result.detail || 'Не удалось войти. Проверьте пароль и подключение бота.');
@@ -114,7 +123,7 @@ export function Login({
               Проверяем вашу сессию…
             </div>
           ) : (
-            <form onSubmit={submit}>
+            <form onSubmit={submit} noValidate>
               <label className="field" htmlFor="owner-password">
                 Пароль владельца
               </label>
@@ -142,7 +151,7 @@ export function Login({
                   {visible ? <EyeOff size={17} /> : <Eye size={17} />}
                 </button>
               </div>
-              <Button type="submit" className="login-button" busy={busy} disabled={!password}>
+              <Button type="submit" className="login-button" busy={busy}>
                 Войти в пространство <ArrowRight size={17} />
               </Button>
               {(failure || error) && (
