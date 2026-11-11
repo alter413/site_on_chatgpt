@@ -23,7 +23,7 @@ export function Guide() {
           [
             '02',
             'Соедините сайт и бота',
-            'Создайте Cloudflare Tunnel до localhost:8765. Задайте BOT_API_URL и BOT_ADMIN_TOKEN в Pages. Настройте Cloudflare Access с вашим email.',
+            'Создайте Cloudflare Tunnel до localhost:8765. Задайте BOT_API_URL, BOT_ADMIN_TOKEN и случайный OWNER_PASSWORD в секретах Worker. Для входа нужен только пароль.',
           ],
           [
             '03',

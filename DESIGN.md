@@ -24,6 +24,6 @@
 колонку. Формы имеют labels, фокус видим, native dialog ловит фокус. Ошибки доступны
 через role=alert, обновления через aria-live. reduced-motion соблюдается.
 
-Безопасность: Cloudflare Access JWT (issuer/audience/signature/expiry), email владельца,
-same-origin writes. Токен бота живёт только в secrets Pages Function. Ненастроенное
+Безопасность: случайный пароль владельца, HttpOnly-сессия, проверяемая через базу бота,
+общий лимит попыток и same-origin writes. Секреты живут в настройках Worker. Ненастроенное
 приложение закрыто; демо не умеет обращаться к API управления.

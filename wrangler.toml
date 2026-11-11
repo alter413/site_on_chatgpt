@@ -3,5 +3,5 @@ compatibility_date = "2026-11-11"
 pages_build_output_dir = "web-dist"
 
 # Secrets are configured in Cloudflare Pages Settings, never in this file.
-# OWNER_EMAIL, CF_ACCESS_TEAM_DOMAIN, CF_ACCESS_AUD,
+# OWNER_PASSWORD,
 # BOT_API_URL, BOT_ADMIN_TOKEN, optional BOT_ACCESS_CLIENT_ID/BOT_ACCESS_CLIENT_SECRET

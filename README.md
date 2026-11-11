@@ -1,10 +1,12 @@
 # Sova — панель и Telegram Sandbox
 
 В этом репозитории теперь есть полноценная веб-панель: React + TypeScript,
-Cloudflare Pages Functions, вход владельца через Cloudflare Access, настройки
+Cloudflare Pages Functions / Workers, вход владельца по случайному паролю, настройки
 песочниц/ИИ, графики и кастомизация оформления.
 
 **Публикация сайта:** [пошаговая инструкция Cloudflare](DEPLOYMENT.md).
+**Новый простой вход:** [настройка пароля](PASSWORD_LOGIN.md). Нужен один дополнительный
+секрет `OWNER_PASSWORD`; прежние настройки Access больше не нужны.
 Build command: `npm run build`. Output directory: `web-dist`. Node: `22`.
 Сайт и обновлённый Python-бот находятся в одном репозитории. Для локального просмотра
 сайта: `npm ci` → `npm run dev` → «Посмотреть демопанель».

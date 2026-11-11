@@ -1,5 +1,7 @@
 import json
+import secrets
 import sqlite3
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -38,10 +40,58 @@ class Store:
                 input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
                 model TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS events_at ON events(at);
+            CREATE TABLE IF NOT EXISTS auth_attempts (
+                key TEXT PRIMARY KEY, started INTEGER NOT NULL, attempts INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS owner_sessions (
+                digest TEXT PRIMARY KEY, version TEXT NOT NULL, created INTEGER NOT NULL,
+                expires INTEGER NOT NULL);
         """)
 
     def close(self):
         self.db.close()
+
+    def auth_attempt(self, key: str, *, now=None):
+        now = int(time.time()) if now is None else now
+        with self.db:
+            self.db.execute("DELETE FROM auth_attempts WHERE started <= ?", (now - 900,))
+            row = self.db.execute(
+                "SELECT attempts FROM auth_attempts WHERE key=?", (key,)
+            ).fetchone()
+            if row:
+                if row[0] >= 10:
+                    return False
+                self.db.execute("UPDATE auth_attempts SET attempts=attempts+1 WHERE key=?", (key,))
+            else:
+                if self.db.execute("SELECT COUNT(*) FROM auth_attempts").fetchone()[0] >= 10000:
+                    return False
+                self.db.execute("INSERT INTO auth_attempts VALUES (?,?,1)", (key, now))
+            return True
+
+    def create_session(self, digest: str, version: str, *, now=None):
+        now = int(time.time()) if now is None else now
+        with self.db:
+            self.db.execute(
+                "DELETE FROM owner_sessions WHERE expires<=? OR version!=?", (now, version)
+            )
+            self.db.execute(
+                "INSERT OR REPLACE INTO owner_sessions VALUES (?,?,?,?)",
+                (digest, version, now, now + 8 * 3600),
+            )
+            self.db.execute(
+                "DELETE FROM owner_sessions WHERE digest NOT IN "
+                "(SELECT digest FROM owner_sessions ORDER BY created DESC,rowid DESC LIMIT 64)"
+            )
+
+    def check_session(self, digest: str, version: str, *, now=None):
+        now = int(time.time()) if now is None else now
+        row = self.db.execute(
+            "SELECT version,expires FROM owner_sessions WHERE digest=?", (digest,)
+        ).fetchone()
+        return bool(row and row[1] > now and secrets.compare_digest(row[0], version))
+
+    def revoke_session(self, digest: str):
+        with self.db:
+            self.db.execute("DELETE FROM owner_sessions WHERE digest=?", (digest,))
 
     def status(self):
         return dict(self.db.execute("SELECT status, revision FROM state WHERE id=1").fetchone())

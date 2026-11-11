@@ -1,57 +1,7 @@
-import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
-
-export interface Env {
-  OWNER_EMAIL?: string;
-  CF_ACCESS_TEAM_DOMAIN?: string;
-  CF_ACCESS_AUD?: string;
-  BOT_API_URL?: string;
-  BOT_ADMIN_TOKEN?: string;
-  BOT_ACCESS_CLIENT_ID?: string;
-  BOT_ACCESS_CLIENT_SECRET?: string;
-}
+import { authenticated, authRoute, AuthUnavailable, configured, json, type Env } from './auth';
+export type { Env } from './auth';
 
 const MAX_BODY = 8 * 1024 * 1024 + 65536;
-const jwksCache = new Map<string, JWTVerifyGetKey>();
-const json = (body: unknown, status = 200) =>
-  Response.json(body, {
-    status,
-    headers: {
-      'Cache-Control': 'no-store',
-      'X-Content-Type-Options': 'nosniff',
-      'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
-    },
-  });
-
-export function identityConfig(env: Env) {
-  const team = env.CF_ACCESS_TEAM_DOMAIN?.replace(/\/$/, '');
-  if (!env.OWNER_EMAIL || !env.CF_ACCESS_AUD || !team) return null;
-  if (!/^https:\/\/[a-z0-9-]+\.cloudflareaccess\.com$/.test(team)) return null;
-  return { team, audience: env.CF_ACCESS_AUD, owner: env.OWNER_EMAIL.trim().toLowerCase() };
-}
-
-export async function ownerIdentity(request: Request, env: Env, key?: JWTVerifyGetKey) {
-  const config = identityConfig(env);
-  if (!config) throw new Error('not_configured');
-  const token = request.headers.get('Cf-Access-Jwt-Assertion');
-  if (!token) throw new Error('unauthorized');
-  if (!key) {
-    key = jwksCache.get(config.team);
-    if (!key) {
-      key = createRemoteJWKSet(new URL(config.team + '/cdn-cgi/access/certs'));
-      jwksCache.set(config.team, key);
-    }
-  }
-  const { payload } = await jwtVerify(token, key, {
-    issuer: config.team,
-    audience: config.audience,
-    algorithms: ['RS256'],
-    requiredClaims: ['exp', 'iat', 'sub', 'email'],
-    clockTolerance: 5,
-  });
-  if (typeof payload.email !== 'string' || payload.email.toLowerCase() !== config.owner)
-    throw new Error('forbidden');
-  return payload.email;
-}
 
 export function allowedRoute(path: string, method: string) {
   const routes: [RegExp, string[]][] = [
@@ -70,31 +20,38 @@ export async function handleRequest(
   request: Request,
   env: Env,
   dependencies: {
-    key?: JWTVerifyGetKey;
     fetch?: typeof fetch;
   } = {},
 ): Promise<Response> {
   const url = new URL(request.url);
-  if (!identityConfig(env))
+  if (!configured(env))
     return json(
       {
         error: 'not_configured',
-        detail: 'Настройте Cloudflare Access и OWNER_EMAIL. Доступ к управлению закрыт.',
+        detail:
+          'Добавьте секрет OWNER_PASSWORD — случайный пароль из 43 символов — в настройках Worker.',
       },
       503,
     );
-  let email: string;
   try {
-    email = await ownerIdentity(request, env, dependencies.key);
-  } catch {
-    return json(
-      { error: 'unauthorized', detail: 'Войдите в Cloudflare Access аккаунтом владельца.' },
-      401,
-    );
+    const auth = await authRoute(request, env, dependencies.fetch || fetch);
+    if (auth) return auth;
+    if (!(await authenticated(request, env, dependencies.fetch || fetch)))
+      return json({ error: 'unauthorized', detail: 'Введите пароль владельца.' }, 401);
+  } catch (error) {
+    if (error instanceof AuthUnavailable)
+      return json(
+        {
+          error: 'auth_unavailable',
+          detail: 'Запустите обновлённого бота и Tunnel. Проверьте BOT_API_URL и BOT_ADMIN_TOKEN.',
+        },
+        503,
+      );
+    return json({ error: 'unauthorized', detail: 'Введите пароль владельца.' }, 401);
   }
   if (url.pathname === '/api/session' && request.method === 'GET')
     return json({
-      email,
+      email: 'Владелец',
       access: 'owner',
       backend_configured: Boolean(env.BOT_API_URL && env.BOT_ADMIN_TOKEN),
     });
@@ -108,7 +65,7 @@ export async function handleRequest(
     return json(
       {
         error: 'backend_not_configured',
-        detail: 'Добавьте BOT_API_URL и BOT_ADMIN_TOKEN в Cloudflare Pages.',
+        detail: 'Добавьте BOT_API_URL и BOT_ADMIN_TOKEN в настройках Worker.',
       },
       503,
     );

@@ -1,165 +1,316 @@
-import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT, type JWTVerifyGetKey } from 'jose';
+import { describe, expect, it, vi } from 'vitest';
+import { COOKIE, SESSION_SECONDS } from '../server/auth';
 import { allowedRoute, handleRequest, type Env } from '../server/gateway';
 
+// Deliberately public test fixture, never a deployment credential.
+const PASSWORD = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk0123456789_-';
 const env: Env = {
-  OWNER_EMAIL: 'owner@example.com',
-  CF_ACCESS_TEAM_DOMAIN: 'https://myteam.cloudflareaccess.com',
-  CF_ACCESS_AUD: 'app-audience',
+  OWNER_PASSWORD: PASSWORD,
   BOT_API_URL: 'https://bot.example.com',
   BOT_ADMIN_TOKEN: 'private-bot-token',
 };
-let privateKey: CryptoKey;
-let key: JWTVerifyGetKey;
-beforeAll(async () => {
-  const pair = await generateKeyPair('RS256');
-  privateKey = pair.privateKey;
-  const jwk = await exportJWK(pair.publicKey);
-  jwk.kid = 'test-key';
-  key = createLocalJWKSet({ keys: [jwk] });
-});
-async function token(email = 'owner@example.com', aud = 'app-audience', expired = false) {
-  return new SignJWT({ email })
-    .setProtectedHeader({ alg: 'RS256', kid: 'test-key' })
-    .setSubject('owner-id')
-    .setIssuer(env.CF_ACCESS_TEAM_DOMAIN!)
-    .setAudience(aud)
-    .setIssuedAt()
-    .setExpirationTime(expired ? Math.floor(Date.now() / 1000) - 100 : '10m')
-    .sign(privateKey);
+const origin = 'https://panel.example.com';
+class Backend {
+  sessions = new Map<string, { version: string; expires: number }>();
+  attempts = new Map<string, number>();
+  bodies: string[] = [];
+  upstream = vi.fn(async () => Response.json({ status: 'busy' }));
+  fetch: typeof fetch = async (input, options) => {
+    const url = new URL(String(input));
+    const headers = new Headers(options?.headers);
+    expect(headers.get('Authorization')).toBe('Bearer private-bot-token');
+    expect(headers.get('Cookie')).toBeNull();
+    expect(headers.get('Cf-Access-Jwt-Assertion')).toBeNull();
+    expect(options?.redirect).toBe('manual');
+    if (!url.pathname.startsWith('/api/v1/auth/')) return this.upstream();
+    const raw = String(options?.body);
+    this.bodies.push(raw);
+    const body = JSON.parse(raw);
+    if (url.pathname.endsWith('/attempt')) {
+      const count = (this.attempts.get(body.key) || 0) + 1;
+      this.attempts.set(body.key, count);
+      return Response.json(count > 10 ? { detail: 'limited' } : { allowed: true }, {
+        status: count > 10 ? 429 : 200,
+      });
+    }
+    if (url.pathname.endsWith('/create')) {
+      this.sessions.set(body.digest, {
+        version: body.version,
+        expires: Date.now() + SESSION_SECONDS * 1000,
+      });
+      return Response.json({ created: true });
+    }
+    if (url.pathname.endsWith('/revoke')) {
+      this.sessions.delete(body.digest);
+      return Response.json({ revoked: true });
+    }
+    const stored = this.sessions.get(body.digest);
+    return Response.json({
+      valid: !!stored && stored.version === body.version && stored.expires > Date.now(),
+    });
+  };
 }
-async function request(
-  path = '/api/v1/status',
-  method = 'GET',
-  jwt?: string,
-  extra: Record<string, string> = {},
+function request(
+  path = '/api/session',
+  options: {
+    method?: string;
+    cookie?: string;
+    body?: unknown;
+    headers?: Record<string, string>;
+  } = {},
 ) {
-  return new Request('https://panel.example.com' + path, {
+  const method = options.method || 'GET';
+  return new Request(origin + path, {
     method,
-    headers: { ...(jwt ? { 'Cf-Access-Jwt-Assertion': jwt } : {}), ...extra },
-    ...(method === 'PATCH' || method === 'PUT' ? { body: '{"status":"busy"}' } : {}),
+    headers: {
+      ...(method !== 'GET'
+        ? { Origin: origin, 'X-Panel-Request': '1', 'Content-Type': 'application/json' }
+        : {}),
+      ...(options.cookie ? { Cookie: options.cookie } : {}),
+      ...options.headers,
+    },
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
   });
 }
+async function login(backend: Backend, password = PASSWORD) {
+  return handleRequest(request('/api/login', { method: 'POST', body: { password } }), env, {
+    fetch: backend.fetch,
+  });
+}
+async function cookie(backend: Backend) {
+  const response = await login(backend);
+  expect(response.status).toBe(200);
+  return response.headers.get('Set-Cookie')!.split(';')[0];
+}
 
-describe('owner authorization', () => {
-  it('fails closed before configuration', async () => {
-    const result = await handleRequest(await request(), {});
-    expect(result.status).toBe(503);
+describe('password owner authentication', () => {
+  it('fails closed if the password is unset or weak', async () => {
+    for (const value of [undefined, 'short'])
+      expect((await handleRequest(request(), { OWNER_PASSWORD: value })).status).toBe(503);
   });
-  it('rejects missing JWT and forged email headers', async () => {
-    const result = await handleRequest(
-      await request('/api/session', 'GET', undefined, {
-        'Cf-Access-Authenticated-User-Email': 'owner@example.com',
+  it('does not trust old Access headers, bearer keys or demo flags', async () => {
+    const backend = new Backend();
+    const response = await handleRequest(
+      request('/api/session', {
+        headers: {
+          'Cf-Access-Jwt-Assertion': 'forged',
+          'Cf-Access-Authenticated-User-Email': 'owner@example.com',
+          Authorization: 'Bearer private-bot-token',
+          'X-Demo': 'true',
+        },
       }),
       env,
-      { key },
+      { fetch: backend.fetch },
     );
-    expect(result.status).toBe(401);
+    expect(response.status).toBe(401);
+    expect(backend.bodies).toHaveLength(0);
   });
-  it('allows only a signed owner token and never returns secrets', async () => {
-    const result = await handleRequest(await request('/api/session', 'GET', await token()), env, {
-      key,
+  it('sets a secure cookie and stores only session digests in the backend', async () => {
+    const backend = new Backend();
+    const response = await login(backend);
+    expect(response.status).toBe(200);
+    const header = response.headers.get('Set-Cookie')!;
+    for (const part of [
+      COOKIE + '=',
+      'HttpOnly',
+      'Secure',
+      'SameSite=Strict',
+      'Path=/',
+      'Max-Age=28800',
+    ])
+      expect(header).toContain(part);
+    const raw = header.split(';')[0].split('=')[1];
+    expect(raw).toHaveLength(43);
+    expect(backend.sessions.has(raw)).toBe(false);
+    expect(backend.bodies.join(' ')).not.toContain(PASSWORD);
+    expect(backend.bodies.join(' ')).not.toContain(raw);
+    expect(await response.text()).not.toContain(PASSWORD);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+  });
+  it('rejects a wrong password and globally throttles repeated attempts', async () => {
+    const backend = new Backend();
+    for (let i = 0; i < 10; i++) expect((await login(backend, 'wrong-password')).status).toBe(401);
+    const response = await login(backend);
+    expect(response.status).toBe(429);
+    expect(response.headers.get('Retry-After')).toBe('900');
+    expect(backend.sessions.size).toBe(0);
+  });
+  it('checks the shared backend on every authenticated request', async () => {
+    const backend = new Backend();
+    const stored = await cookie(backend);
+    const response = await handleRequest(request('/api/session', { cookie: stored }), env, {
+      fetch: backend.fetch,
     });
-    expect(result.status).toBe(200);
-    const body = await result.text();
-    expect(body).toContain('owner@example.com');
-    expect(body).not.toContain('private-bot-token');
-    expect(result.headers.get('Cache-Control')).toBe('no-store');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ access: 'owner' });
+    backend.sessions.clear();
+    expect(
+      (
+        await handleRequest(request('/api/session', { cookie: stored }), env, {
+          fetch: backend.fetch,
+        })
+      ).status,
+    ).toBe(401);
   });
-  it.each(['other_email', 'wrong_audience', 'expired', 'tampered'])('rejects %s', async (kind) => {
-    let jwt = await token(
-      kind === 'other_email' ? 'stranger@example.com' : undefined,
-      kind === 'wrong_audience' ? 'another-app' : undefined,
-      kind === 'expired',
-    );
-    if (kind === 'tampered') jwt = jwt.slice(0, -5) + 'abcde';
-    const result = await handleRequest(await request('/api/session', 'GET', jwt), env, { key });
-    expect(result.status).toBe(401);
+  it('rejects expired, tampered and duplicate cookies', async () => {
+    const backend = new Backend();
+    const stored = await cookie(backend);
+    for (const session of backend.sessions.values()) session.expires = 0;
+    for (const value of [stored, stored + 'tampered', stored + '; ' + stored])
+      expect(
+        (
+          await handleRequest(request('/api/session', { cookie: value }), env, {
+            fetch: backend.fetch,
+          })
+        ).status,
+      ).toBe(401);
   });
-  it('does not permit a development bypass', async () => {
+  it('password rotation invalidates every old session', async () => {
+    const backend = new Backend();
+    const stored = await cookie(backend);
+    const rotated = { ...env, OWNER_PASSWORD: 'another-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' };
+    expect(
+      (
+        await handleRequest(request('/api/session', { cookie: stored }), rotated, {
+          fetch: backend.fetch,
+        })
+      ).status,
+    ).toBe(401);
+  });
+  it('logout revokes on the server and blocks replay of the cookie', async () => {
+    const backend = new Backend();
+    const stored = await cookie(backend);
     const result = await handleRequest(
-      await request('/api/session', 'GET', undefined, {
-        'X-Demo': 'true',
-        Authorization: 'Bearer private-bot-token',
-      }),
+      request('/api/logout', { method: 'POST', cookie: stored }),
       env,
-      { key },
+      { fetch: backend.fetch },
     );
-    expect(result.status).toBe(401);
+    expect(result.status).toBe(200);
+    expect(result.headers.get('Set-Cookie')).toContain('Max-Age=0');
+    expect(
+      (
+        await handleRequest(request('/api/session', { cookie: stored }), env, {
+          fetch: backend.fetch,
+        })
+      ).status,
+    ).toBe(401);
+  });
+  it('generates a different opaque token for each login', async () => {
+    const backend = new Backend();
+    expect(await cookie(backend)).not.toBe(await cookie(backend));
+  });
+  it('rejects cross-origin login and logout before backend access', async () => {
+    const backend = new Backend();
+    for (const path of ['/api/login', '/api/logout']) {
+      const result = await handleRequest(
+        request(path, {
+          method: 'POST',
+          body: { password: PASSWORD },
+          headers: { Origin: 'https://evil.example' },
+        }),
+        env,
+        { fetch: backend.fetch },
+      );
+      expect(result.status).toBe(403);
+    }
+    expect(backend.bodies).toHaveLength(0);
+  });
+  it('bounds login input and rejects unexpected fields', async () => {
+    const backend = new Backend();
+    for (const body of [{ password: 'x'.repeat(2000) }, { password: PASSWORD, extra: true }, {}]) {
+      const result = await handleRequest(request('/api/login', { method: 'POST', body }), env, {
+        fetch: backend.fetch,
+      });
+      expect([400, 413]).toContain(result.status);
+    }
+    expect(backend.bodies).toHaveLength(0);
+  });
+  it('fails closed if shared auth storage is unavailable', async () => {
+    const backend = new Backend();
+    const stored = await cookie(backend);
+    const fail = async () => {
+      throw new Error('INTERNAL_SECRET');
+    };
+    for (const req of [
+      request('/api/session', { cookie: stored }),
+      request('/api/login', { method: 'POST', body: { password: PASSWORD } }),
+    ]) {
+      const result = await handleRequest(req, env, { fetch: fail });
+      expect(result.status).toBe(503);
+      expect(await result.text()).not.toContain('INTERNAL_SECRET');
+    }
   });
 });
 
-describe('proxy boundary', () => {
+describe('authenticated proxy boundary', () => {
   it('rejects cross-origin writes', async () => {
-    const upstream = vi.fn();
+    const backend = new Backend();
+    const stored = await cookie(backend);
     const result = await handleRequest(
-      await request('/api/v1/status', 'PUT', await token(), {
-        Origin: 'https://evil.example',
-        'X-Panel-Request': '1',
+      request('/api/v1/status', {
+        method: 'PUT',
+        cookie: stored,
+        body: { status: 'busy' },
+        headers: { Origin: 'https://evil.example' },
       }),
       env,
-      { key, fetch: upstream },
+      { fetch: backend.fetch },
     );
     expect(result.status).toBe(403);
-    expect(upstream).not.toHaveBeenCalled();
+    expect(backend.upstream).not.toHaveBeenCalled();
   });
-  it('requires the UI request header even with origin', async () => {
-    const result = await handleRequest(
-      await request('/api/v1/status', 'PUT', await token(), {
-        Origin: 'https://panel.example.com',
-      }),
-      env,
-      { key },
-    );
-    expect(result.status).toBe(403);
-  });
-  it('adds only server credentials and does not forward cookies or user auth', async () => {
-    const upstream = vi.fn(async (_url: unknown, options?: RequestInit) => {
-      const h = new Headers(options?.headers);
-      expect(h.get('Authorization')).toBe('Bearer private-bot-token');
-      expect(h.get('Cookie')).toBeNull();
-      expect(h.get('Cf-Access-Jwt-Assertion')).toBeNull();
-      expect(options?.redirect).toBe('manual');
-      return Response.json({ status: 'busy' });
+  it('requires the UI header even with the correct origin', async () => {
+    const backend = new Backend();
+    const stored = await cookie(backend);
+    const req = request('/api/v1/status', {
+      method: 'PUT',
+      cookie: stored,
+      body: { status: 'busy' },
     });
+    req.headers.delete('X-Panel-Request');
+    expect((await handleRequest(req, env, { fetch: backend.fetch })).status).toBe(403);
+  });
+  it('adds only server credentials and does not forward cookies or supplied auth', async () => {
+    const backend = new Backend();
+    const stored = await cookie(backend);
     const result = await handleRequest(
-      await request('/api/v1/status', 'PUT', await token(), {
-        Origin: 'https://panel.example.com',
-        'X-Panel-Request': '1',
-        Cookie: 'sensitive=cookie',
-        Authorization: 'Bearer injected',
+      request('/api/v1/status', {
+        method: 'PUT',
+        cookie: stored,
+        body: { status: 'busy' },
+        headers: { Authorization: 'Bearer injected', 'Cf-Access-Jwt-Assertion': 'untrusted' },
       }),
       env,
-      { key, fetch: upstream },
+      { fetch: backend.fetch },
     );
     expect(result.status).toBe(200);
-    expect(upstream).toHaveBeenCalledOnce();
+    expect(backend.upstream).toHaveBeenCalledOnce();
   });
   it('blocks redirects and arbitrary upstream error bodies', async () => {
     for (const status of [302, 500]) {
-      const result = await handleRequest(
-        await request('/api/v1/health', 'GET', await token()),
-        env,
-        {
-          key,
-          fetch: async () =>
-            new Response('SECRET', { status, headers: { Location: 'https://evil.example' } }),
-        },
+      const backend = new Backend();
+      const stored = await cookie(backend);
+      backend.upstream.mockImplementation(
+        async () =>
+          new Response('SECRET', { status, headers: { Location: 'https://evil.example' } }),
       );
+      const result = await handleRequest(request('/api/v1/health', { cookie: stored }), env, {
+        fetch: backend.fetch,
+      });
       expect(result.status).toBe(502);
       expect(await result.text()).not.toContain('SECRET');
     }
   });
-  it('blocks arbitrary paths and methods', () => {
-    expect(allowedRoute('/api/v1/chats/42', 'PATCH')).toBe(true);
+  it('does not publicly proxy the auth service or arbitrary routes', () => {
     for (const path of [
+      '/api/v1/auth/session/create',
+      '/api/v1/auth/attempt',
       '/api/v1/anything',
       '/api/v1/chats/-1',
       '/openapi.json',
-      '/api/v1/chats/42/../../secret',
     ])
-      expect(allowedRoute(path, 'GET')).toBe(false);
-    expect(allowedRoute('/api/v1/health', 'POST')).toBe(false);
+      expect(allowedRoute(path, 'POST')).toBe(false);
+    expect(allowedRoute('/api/v1/chats/42', 'PATCH')).toBe(true);
   });
   it('requires an HTTPS backend origin without userinfo', async () => {
     for (const url of [
@@ -168,9 +319,13 @@ describe('proxy boundary', () => {
       'https://bot.example.com/path',
     ]) {
       const result = await handleRequest(
-        await request('/api/v1/health', 'GET', await token()),
+        request('/api/login', { method: 'POST', body: { password: PASSWORD } }),
         { ...env, BOT_API_URL: url },
-        { key },
+        {
+          fetch: async () => {
+            throw new Error();
+          },
+        },
       );
       expect(result.status).toBe(503);
     }

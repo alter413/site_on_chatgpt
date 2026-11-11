@@ -2,7 +2,10 @@ import { Demo } from './demo';
 import type { PanelData } from './types';
 
 export class Client {
-  constructor(public demo: Demo | null = null) {}
+  constructor(
+    public demo: Demo | null = null,
+    private onUnauthorized?: () => void,
+  ) {}
   async request<T>(path: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
     const method = options.method || 'GET';
     if (this.demo) return (await this.demo.request(path, method, options.body)) as T;
@@ -30,8 +33,10 @@ export class Client {
       } catch {
         /* no upstream content */
       }
-      if (response.status === 401)
-        detail = 'Сессия истекла. Войдите снова через Cloudflare Access.';
+      if (response.status === 401) {
+        detail = 'Сессия истекла. Введите пароль снова.';
+        this.onUnauthorized?.();
+      }
       throw new Error(detail);
     }
     return (response.status === 204 ? null : await response.json()) as T;

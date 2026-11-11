@@ -14,4 +14,5 @@ web-dist/
 !.dev.vars.example
 playwright-report/
 test-results/
+.standalone/
 

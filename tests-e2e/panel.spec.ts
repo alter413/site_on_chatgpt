@@ -1,12 +1,13 @@
 import { expect, test, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { Demo } from '../src/demo';
 
 async function demo(page: Page) {
   await page.route('**/api/session', (route) =>
     route.fulfill({
       status: 503,
       contentType: 'application/json',
-      body: JSON.stringify({ detail: 'Настройте Cloudflare Access. Доступ закрыт.' }),
+      body: JSON.stringify({ detail: 'Настройте OWNER_PASSWORD. Доступ закрыт.' }),
     }),
   );
   await page.goto('/');
@@ -38,6 +39,60 @@ test('desktop overview and all navigation routes render without JS errors', asyn
     );
   }
   expect(errors).toEqual([]);
+});
+
+test('password login, incorrect password, session expiry and logout', async ({ page }) => {
+  const example = new Demo();
+  const fixture = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk0123456789_-';
+  let signedIn = false;
+  await page.route('**/api/session', (route) =>
+    route.fulfill(
+      signedIn
+        ? { json: { email: 'Владелец', access: 'owner', backend_configured: true } }
+        : { status: 401, json: { detail: 'Введите пароль владельца.' } },
+    ),
+  );
+  await page.route('**/api/login', async (route) => {
+    const body = route.request().postDataJSON();
+    if (body.password !== fixture)
+      return route.fulfill({ status: 401, json: { detail: 'Неверный пароль.' } });
+    signedIn = true;
+    return route.fulfill({
+      json: { email: 'Владелец', access: 'owner', backend_configured: true },
+    });
+  });
+  await page.route('**/api/logout', (route) => {
+    signedIn = false;
+    return route.fulfill({ json: { ok: true } });
+  });
+  await page.route('**/api/v1/**', async (route) => {
+    if (!signedIn) return route.fulfill({ status: 401, json: { detail: 'Сессия завершена' } });
+    const path = new URL(route.request().url()).pathname.replace('/api/v1', '');
+    return route.fulfill({ json: await example.request(path, 'GET') });
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto('/');
+  await expect(page.getByLabel('Пароль владельца', { exact: true })).toBeVisible();
+  await page.screenshot({ path: 'test-results/sova-password-login.png', fullPage: true });
+  const accessibility = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+    .analyze();
+  expect(accessibility.violations.map((v) => v.id)).toEqual([]);
+  await page.getByLabel('Пароль владельца', { exact: true }).fill('x'.repeat(43));
+  await page.getByRole('button', { name: 'Войти в пространство' }).click();
+  await expect(page.getByText('Неверный пароль.', { exact: true })).toBeVisible();
+  await page.getByLabel('Пароль владельца', { exact: true }).fill(fixture);
+  await page.getByRole('button', { name: 'Войти в пространство' }).click();
+  await expect(page.getByRole('heading', { name: 'Всё под вашим контролем.' })).toBeVisible();
+  await page.getByRole('button', { name: 'Выйти из аккаунта' }).click();
+  await expect(page.getByLabel('Пароль владельца', { exact: true })).toHaveValue('');
+  await page.getByLabel('Пароль владельца', { exact: true }).fill(fixture);
+  await page.getByRole('button', { name: 'Войти в пространство' }).click();
+  await expect(page.getByRole('heading', { name: 'Всё под вашим контролем.' })).toBeVisible();
+  signedIn = false;
+  await page.getByRole('button', { name: 'Обновить данные', exact: true }).click();
+  await expect(page.getByLabel('Пароль владельца', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Всё под вашим контролем.' })).toHaveCount(0);
 });
 
 test('status, sandbox profile, materials and model settings work', async ({ page }) => {

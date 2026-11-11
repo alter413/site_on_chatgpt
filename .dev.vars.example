@@ -1,7 +1,6 @@
 # Copy to .dev.vars only for local Wrangler testing. Never commit real values.
-OWNER_EMAIL=you@example.com
-CF_ACCESS_TEAM_DOMAIN=https://your-team.cloudflareaccess.com
-CF_ACCESS_AUD=your-pages-access-application-aud
+# Generate with Python secrets.token_urlsafe(32); there is no default password.
+OWNER_PASSWORD=
 BOT_API_URL=https://bot-api.your-domain.com
 BOT_ADMIN_TOKEN=replace-with-the-token-used-by-your-python-bot
 # Optional: service token for an additional Access application protecting the Tunnel

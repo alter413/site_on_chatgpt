@@ -94,6 +94,17 @@ class SettingsPatch(BaseModel):
     max_output_units: int | None = Field(default=None, ge=100, le=3500)
 
 
+class AuthAttempt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class AuthSession(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    version: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 def create_api(store: Store, token: str, telegram=None, ai=None):
     if len(token) < 24 or not token.isascii() or any(c.isspace() for c in token):
         raise ValueError("Токен управления: минимум 24 ASCII-символа без пробелов")
@@ -229,5 +240,29 @@ def create_api(store: Store, token: str, telegram=None, ai=None):
     async def delete(chat_id: ChatID, material_id: int):
         if not store.delete_material(chat_id, material_id):
             raise HTTPException(404, "Материал не найден в этой песочнице")
+
+    @app.post("/api/v1/auth/attempt")
+    async def auth_attempt(body: AuthAttempt):
+        if not store.auth_attempt(body.key):
+            raise HTTPException(
+                429,
+                "Слишком много попыток. Повторите через 15 минут.",
+                headers={"Retry-After": "900"},
+            )
+        return {"allowed": True}
+
+    @app.post("/api/v1/auth/session/create")
+    async def auth_create(body: AuthSession):
+        store.create_session(body.digest, body.version)
+        return {"created": True}
+
+    @app.post("/api/v1/auth/session/check")
+    async def auth_check(body: AuthSession):
+        return {"valid": store.check_session(body.digest, body.version)}
+
+    @app.post("/api/v1/auth/session/revoke")
+    async def auth_revoke(body: AuthSession):
+        store.revoke_session(body.digest)
+        return {"revoked": True}
 
     return app

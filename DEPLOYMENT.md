@@ -6,7 +6,7 @@
 ## Схема работы
 
 ```text
-Ваш браузер → Cloudflare Access → Pages Function → HTTPS Cloudflare Tunnel → Python API
+Ваш браузер → вход по паролю → Worker / Pages Function → HTTPS Tunnel → Python API
                                                                                 ↓
                                                                         Telegram и ваш ИИ
 ```
@@ -40,41 +40,20 @@ Cloudflare Pages размещает React-сайт и защищённый proxy
 Без дальнейшей настройки сайт безопасно показывает вход и демопанель. API управления
 возвращает 503 и ничего не проксирует.
 
-## 2. Защитить личный вход Cloudflare Access
+## 2. Настроить простой вход владельца
 
-Для production удобно добавить свой домен, например `sova.example.com`, в Pages →
-Custom domains. Встроенная защита preview deployments не заменяет защиту production.
-Публичный pages.dev адрес при этом не открывает управление: Function всё равно
-требует действительный JWT нужного Access-приложения и email владельца.
+Cloudflare Access для сайта больше не нужен. Используется один случайный пароль
+в секрете `OWNER_PASSWORD`. Полная короткая инструкция — [PASSWORD_LOGIN.md](PASSWORD_LOGIN.md).
 
-В **Cloudflare Zero Trust → Access → Applications**:
+В Variables and Secrets добавьте OWNER_PASSWORD (43 случайных URL-safe символа),
+BOT_API_URL и BOT_ADMIN_TOKEN. Обновите Python-бот, чтобы он хранил сессии и общий
+лимит попыток. Его прежняя папка data сохраняется. Вход работает при запущенном боте.
 
-1. Создайте приложение **Self-hosted** для полного домена сайта, без ограничения пути.
-2. Добавьте **Allow policy** с единственным конкретным email владельца. Не ставьте Everyone
-   и не добавляйте Bypass для API.
-3. Выберите One-time PIN или свой identity provider. Включите MFA у провайдера, если нужно.
-4. Скопируйте **Application Audience (AUD)** этого приложения.
-5. Скопируйте свой team domain вида `https://your-team.cloudflareaccess.com`.
-
-В Pages → Settings → Variables and Secrets добавьте для **Production**:
-
-| Переменная | Пример / источник |
-| --- | --- |
-| `OWNER_EMAIL` | ваш единственный email из Access policy |
-| `CF_ACCESS_TEAM_DOMAIN` | `https://your-team.cloudflareaccess.com` |
-| `CF_ACCESS_AUD` | AUD именно приложения сайта |
-
-Не добавляйте префикс `VITE_`: это серверные переменные. После изменения выполните
-новый deployment. Для preview либо настройте соответствующую Access-защиту и
-переменные отдельно, либо оставьте preview без секретов: его API будет закрыт.
-
-Сервер проверяет криптографическую подпись RS256 по ключам Cloudflare, issuer,
-audience, exp/iat/sub/email и точное совпадение email. Заголовок с email без
-подписанного JWT доступа не даёт. Сам по себе токен Python API также не авторизует вход на сайт.
-
-Если открываете сайт на другом production-домене, этот домен тоже должен быть покрыт
-Access-приложением. Кнопка входа обновляет `/`: Cloudflare перехватывает запрос и
-предлагает авторизацию. Выход выполняется через `/cdn-cgi/access/logout`.
+Для Workers используйте полный скомпилированный Worker-файл через Edit code;
+окно загрузки статических файлов публикует только UI и не устанавливает API.
+Для Pages Git integration собирает Functions из исходников автоматически.
+После изменения секретов опубликуйте новую версию. Если на домене уже было отдельное
+Access-приложение для старого входа по email, отключите его для домена сайта.
 
 ## 3. Запустить обновлённого бота
 
@@ -179,7 +158,7 @@ npm run dev
 Демо использует только локальную память и никогда не вызывает API бота.
 Для локального Cloudflare runtime: `npm run build` → `npm run pages:dev`.
 Пример серверных переменных лежит в `.dev.vars.example`, реальные `.dev.vars` исключены из Git.
-Локальный runtime без действительного Access JWT не даёт управлять ботом; обхода
+Локальный runtime без пароля и действительной сессии не даёт управлять ботом; обхода
 авторизации для разработки в production-коде нет.
 
 ## Проверки перед публикацией
@@ -203,8 +182,8 @@ npm run format:check
 
 | Симптом | Что проверить |
 | --- | --- |
-| API 503 `not_configured` | OWNER_EMAIL, TEAM_DOMAIN и AUD заданы в нужной среде и выполнен redeploy |
-| API 401 | Домен защищён Access; вход выполнен тем же email, совпадают issuer и AUD |
+| API 503 `not_configured` | OWNER_PASSWORD задан в нужной среде, формат 43–128 URL-safe символов, выполнен redeploy |
+| API 401 | Введите пароль владельца; проверьте, не истекли 8 часов сессии |
 | Нет связи с ботом | Python запущен, cloudflared работает, BOT_API_URL корректный |
 | Ошибка редиректа backend | Tunnel Access настроен на Service Auth и переданы его service secrets |
 | Смена модели недоступна | Бот запущен без --api-only |
@@ -217,5 +196,5 @@ npm run format:check
 Документация Cloudflare:
 [Pages Git integration](https://developers.cloudflare.com/pages/get-started/git-integration/),
 [Functions bindings](https://developers.cloudflare.com/pages/functions/bindings/),
-[проверка Access JWT](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/),
+[настройка секретов](https://developers.cloudflare.com/workers/configuration/secrets/),
 [Tunnel для приложения](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/).

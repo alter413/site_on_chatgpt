@@ -1,3 +1,5 @@
+import { Brand } from './Brand';
+import { Login } from './Login';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Activity,
@@ -26,8 +28,12 @@ import { Demo } from './demo';
 import { Overview } from './Overview';
 import { Sandboxes } from './Sandboxes';
 import { ActivityPage, AppearancePage, Guide, Models, SecurityPage } from './Settings';
-import { Badge, Button } from './ui';
+import { Button } from './ui';
 import { statusLabels, type Appearance, type PanelData, type Session, type Status } from './types';
+
+function liveClient() {
+  return new Client(null, () => window.dispatchEvent(new Event('sova:session-expired')));
+}
 
 const navigation = [
   { id: 'overview', label: 'Обзор', icon: LayoutDashboard },
@@ -68,7 +74,7 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [checking, setChecking] = useState(true);
   const [authError, setAuthError] = useState('');
-  const [client, setClient] = useState(() => new Client());
+  const [client, setClient] = useState(() => liveClient());
   const [demo, setDemo] = useState(false);
   const [data, setData] = useState<PanelData | null>(null);
   const [route, setRoute] = useState<Route>(initialRoute);
@@ -134,9 +140,7 @@ export default function App() {
         try {
           result = (await response.json()) as typeof result;
         } catch {
-          throw new Error(
-            'Подключите сайт к Cloudflare Pages Functions, чтобы открыть личную панель.',
-          );
+          throw new Error('Подключите сайт к серверный Worker, чтобы открыть личную панель.');
         }
         if (!response.ok) throw new Error(result.detail || 'Войдите с учётной записью владельца.');
         if (typeof result.email !== 'string' || result.access !== 'owner')
@@ -205,6 +209,34 @@ export default function App() {
     },
     [refresh, notify],
   );
+  async function logout() {
+    try {
+      const response = await fetch('/api/logout', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'X-Panel-Request': '1' },
+      });
+      if (!response.ok) throw new Error('Не удалось отозвать сессию. Проверьте подключение бота.');
+      sequence.current++;
+      setSession(null);
+      setData(null);
+      setNames({});
+      setAuthError('');
+    } catch (error) {
+      notify((error as Error).message, true);
+    }
+  }
+  useEffect(() => {
+    const expire = () => {
+      sequence.current++;
+      setSession(null);
+      setData(null);
+      setNames({});
+      setAuthError('Сессия завершена. Введите пароль снова.');
+    };
+    window.addEventListener('sova:session-expired', expire);
+    return () => window.removeEventListener('sova:session-expired', expire);
+  }, []);
   function enterDemo() {
     const instance = new Demo();
     setDemo(true);
@@ -217,12 +249,25 @@ export default function App() {
   function exitDemo() {
     sequence.current++;
     setDemo(false);
-    setClient(new Client());
+    setClient(liveClient());
     setNames({});
     setData(null);
     setConnectionError('');
   }
-  if (!session && !demo) return <Login checking={checking} error={authError} onDemo={enterDemo} />;
+  if (!session && !demo)
+    return (
+      <Login
+        checking={checking}
+        error={authError}
+        onDemo={enterDemo}
+        onLogin={(owner) => {
+          setAuthError('');
+          setSession(owner);
+          setClient(liveClient());
+          setData(null);
+        }}
+      />
+    );
   if (!data)
     return (
       <div className="boot-screen">
@@ -239,6 +284,11 @@ export default function App() {
               <Button variant="ghost" onClick={enterDemo}>
                 Посмотреть демонстрацию
               </Button>
+              {session && (
+                <Button variant="ghost" onClick={() => void logout()}>
+                  Выйти из аккаунта
+                </Button>
+              )}
               <a
                 href="https://github.com/alter413/site_on_chatgpt/blob/main/DEPLOYMENT.md"
                 target="_blank"
@@ -353,13 +403,13 @@ export default function App() {
                   <LogOut size={16} />
                 </button>
               ) : (
-                <a
-                  href="/cdn-cgi/access/logout"
+                <button
+                  onClick={() => void logout()}
                   className="icon-button"
                   aria-label="Выйти из аккаунта"
                 >
                   <LogOut size={16} />
-                </a>
+                </button>
               )}
             </div>
           </div>
@@ -489,127 +539,10 @@ export default function App() {
   );
 }
 
-export function Brand() {
-  return (
-    <div className="brand">
-      <svg viewBox="0 0 48 48" aria-hidden="true">
-        <path d="M10 11l14 7 14-7v17c0 12-28 12-28 0z" fill="currentColor" />
-        <circle cx="17" cy="24" r="4.5" fill="var(--brand-eye)" />
-        <circle cx="31" cy="24" r="4.5" fill="var(--brand-eye)" />
-        <path d="M20 30h8l-4 5z" fill="var(--brand-eye)" />
-      </svg>
-      <span>
-        sova<span className="brand-period">.</span>
-      </span>
-      <small>PERSONAL AGENT</small>
-    </div>
-  );
-}
 function CloudError() {
   return (
     <div className="login-lock">
       <Zap size={28} />
-    </div>
-  );
-}
-function Login({
-  checking,
-  error,
-  onDemo,
-}: {
-  checking: boolean;
-  error: string;
-  onDemo: () => void;
-}) {
-  return (
-    <div className="login-page">
-      <section className="login-story">
-        <Brand />
-        <div>
-          <div className="eyebrow">НА СВЯЗИ. НА ВАШИХ УСЛОВИЯХ.</div>
-          <h1>
-            Ваши разговоры.
-            <br />
-            Ваши границы<span>.</span>
-          </h1>
-          <p>
-            Пока вы заняты — Sova отвечает.
-            <br />
-            Только тем, кому вы разрешили.
-            <br />
-            Только то, чем вы готовы поделиться.
-          </p>
-          <div className="login-tags">
-            <span>
-              <ShieldCheck size={15} />
-              Изоляция контекста
-            </span>
-            <span>
-              <FolderLock size={15} />
-              Личные песочницы
-            </span>
-          </div>
-        </div>
-        <span className="login-story-footer">Чуть меньше уведомлений. Чуть больше жизни.</span>
-        <div className="login-orbit" aria-hidden="true">
-          <i />
-          <i />
-          <i />
-        </div>
-      </section>
-      <section className="login-form-side">
-        <div className="login-form">
-          <div className="login-lock">
-            <ShieldCheck size={26} />
-          </div>
-          <Badge tone="green">Личный доступ</Badge>
-          <h2>Добро пожаловать домой</h2>
-          <p>
-            Панель доступна только владельцу.
-            <br />
-            Войдите через защищённый Cloudflare Access.
-          </p>
-          {checking ? (
-            <div className="login-check">
-              <LoaderCircle size={17} className="spin" />
-              Проверяем вашу сессию…
-            </div>
-          ) : (
-            <>
-              <a className="button primary login-button" href="/">
-                Войти через Cloudflare Access
-                <ArrowRight size={17} />
-              </a>
-              {error && (
-                <div className="login-notice">
-                  <ShieldCheck size={16} />
-                  <span>{error}</span>
-                </div>
-              )}
-            </>
-          )}
-          <div className="login-divider">
-            <span>пока подключаете аккаунт</span>
-          </div>
-          <Button variant="secondary" onClick={onDemo} className="login-button">
-            Посмотреть демопанель <ExternalLink size={15} />
-          </Button>
-          <small className="login-help">
-            Настраиваете впервые?{' '}
-            <a
-              href="https://github.com/alter413/site_on_chatgpt/blob/main/DEPLOYMENT.md"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Инструкция подключения
-            </a>
-          </small>
-        </div>
-        <div className="login-security">
-          <ShieldCheck size={14} />
-          Секреты аккаунта не хранятся в браузере
-        </div>
-      </section>
     </div>
   );
 }
